@@ -1,5 +1,4 @@
-import os
-import requests
+import os, requests, logging
 from tmdbv3api import TMDb, Movie
 from tmdbv3api.exceptions import TMDbException
 from typing import List, Optional, Dict
@@ -12,8 +11,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.popup import Popup
 from kivy.uix.textinput import TextInput
-from kivy.clock import Clock
-from kivy.clock import mainthread
+from kivy.clock import Clock, mainthread
 from dotenv import load_dotenv
 from kivy.config import Config
 from kivy.core.window import Window
@@ -21,28 +19,20 @@ from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.button import Button
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.graphics import Color, Rectangle
-from kivy.properties import StringProperty, BooleanProperty, ObjectProperty
+from kivy.properties import StringProperty, ObjectProperty
 from kivy.core.text import Label as CoreLabel
-import logging
 
-# Configure logging
 logging.basicConfig(filename='movie_app.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
-
-# Load environment variables
 load_dotenv()
-
-# Set Kivy configurations
 Config.set('graphics', 'width', '800')
 Config.set('graphics', 'height', '600')
-Config.set('kivy', 'keyboard_mode', 'system')  # Disable the virtual keyboard
+Config.set('kivy', 'keyboard_mode', 'system')
 Config.set('graphics', 'fullscreen', 'auto')
 
-# Replace with your actual API key or use environment variables
 api_key = os.getenv('TMDB_API_KEY', '412cb4afbe96d39f9db34601104ff7e4')
 tmdb = TMDb()
 tmdb.api_key = api_key
 
-# MovieDetails class to store movie details
 class MovieDetails:
     def __init__(self, title: str, overview: str, release_date: str, poster_path: str, id: int):
         self.title = title
@@ -51,62 +41,21 @@ class MovieDetails:
         self.poster_path = poster_path
         self.id = id
 
-# Function to fetch popular movies
-def fetch_popular_movies(page_number: int) -> Optional[List[MovieDetails]]:
+def fetch_movies(func, query=None, page_number=1) -> Optional[List[MovieDetails]]:
     try:
         movie = Movie()
-        popular_movies_page = movie.popular(page=page_number)
-        if popular_movies_page:
-            movie_details_list = []
-            for movie_data in popular_movies_page:
-                movie_details = MovieDetails(
-                    title=movie_data.title,
-                    overview=movie_data.overview,
-                    release_date=movie_data.release_date,
-                    poster_path=movie_data.poster_path,
-                    id=movie_data.id
-                )
-                movie_details_list.append(movie_details)
-            return movie_details_list
-    except requests.exceptions.RequestException as request_error:
-        logging.error(f"Request error occurred: {request_error}")
-        return None
-    except Exception as general_error:
-        logging.error(f"Unexpected error: {general_error}")
+        result_page = func(query=query, page=page_number) if query else func(page=page_number)
+        return [MovieDetails(m.title, m.overview, m.release_date, m.poster_path, m.id) for m in result_page] if result_page else None
+    except (requests.exceptions.RequestException, Exception) as e:
+        logging.error(f"Error: {e}")
         return None
 
-# Function to search movies
-def search_movies(query: str, page_number: int) -> Optional[List[MovieDetails]]:
-    try:
-        movie = Movie()
-        search_result_page = movie.search(query=query, page=page_number)
-        if search_result_page:
-            movie_details_list = []
-            for movie_data in search_result_page:
-                movie_details = MovieDetails(
-                    title=movie_data.title,
-                    overview=movie_data.overview,
-                    release_date=movie_data.release_date,
-                    poster_path=movie_data.poster_path,
-                    id=movie_data.id
-                )
-                movie_details_list.append(movie_details)
-            return movie_details_list
-    except requests.exceptions.RequestException as request_error:
-        logging.error(f"Request error occurred: {request_error}")
-        return None
-    except Exception as general_error:
-        logging.error(f"Unexpected error: {general_error}")
-        return None
-
-# TextInput class to disable virtual keyboard
 class NoKeyboardTextInput(TextInput):
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
             Window.release_all_keyboards()
         return super().on_touch_down(touch)
 
-# Custom clear button with icon
 class ClearButton(ButtonBehavior, Label):
     text = StringProperty('X')
     icon_size = StringProperty('12sp')
@@ -131,7 +80,6 @@ class ClearButton(ButtonBehavior, Label):
        self.texture = self._label.texture
        self.texture_size = list(self._label.texture.size)
 
-# Custom search bar with a clear button
 class SearchBar(BoxLayout):
     search_input = ObjectProperty(None)
     clear_button = ObjectProperty(None)
@@ -159,7 +107,6 @@ class SearchBar(BoxLayout):
     def on_search(self):
         pass
 
-# Main app class
 class MoviePosterApp(App):
     def __init__(self, **kwargs):
        super().__init__(**kwargs)
@@ -171,12 +118,9 @@ class MoviePosterApp(App):
     
     def build(self):
         self.screen_manager = ScreenManager()
-
-        # Main screen
         self.main_screen = Screen(name="Main Screen")
         root_layout = BoxLayout(orientation='vertical', padding=10)
-        title_label = Label(text="Popular Movies", font_size='24sp', size_hint_y=None, height=50)
-        root_layout.add_widget(title_label)
+        root_layout.add_widget(Label(text="Popular Movies", font_size='24sp', size_hint_y=None, height=50))
         self.search_bar = SearchBar()
         self.search_bar.bind(on_search=self.perform_search)
         self.search_bar.search_input.bind(on_text_validate=self.perform_search)
@@ -196,44 +140,11 @@ class MoviePosterApp(App):
             self.loading_popup.dismiss()
             return root_layout
 
-        # Function to load movies
-        def load_movies(dt):
-            try:
-                all_popular_movies = []
-                for page_number in range(1, 6):
-                    popular_movies_page = fetch_popular_movies(page_number)
-                    if popular_movies_page:
-                        all_popular_movies.extend(popular_movies_page)
-                    else:
-                        logging.error(f"Failed to get popular movies for page {page_number}")
-                        continue
-
-                for movie_details in all_popular_movies:
-                  self.movie_cache[movie_details.id] = movie_details
-                  self.add_movie_poster(movie_details)
-
-
-            except TMDbException as tmdb_error:
-                error_message = f"TMDb API error: {tmdb_error}. Please check your API key and try again."
-                logging.error(error_message)
-                self.show_error(error_message)
-            except Exception as general_error:
-                error_message = f"General error: {general_error}. Please check your setup and try again."
-                logging.error(error_message)
-                self.show_error(error_message)
-            finally:
-               if self.loading_popup:
-                  self.loading_popup.dismiss()
-
-        Clock.schedule_once(load_movies, 1)
-
+        Clock.schedule_once(self.load_movies, 1)
         self.main_screen.add_widget(root_layout)
         self.screen_manager.add_widget(self.main_screen)
-
-        # Detail screen
         self.detail_screen = Screen(name="Detail Screen")
         self.screen_manager.add_widget(self.detail_screen)
-
         return self.screen_manager
 
     @mainthread
@@ -275,7 +186,7 @@ class MoviePosterApp(App):
          try:
              all_search_movies = []
              for page_number in range(1, 6):
-                  search_result_page = search_movies(query, page_number)
+                  search_result_page = fetch_movies(Movie().search, query, page_number)
                   if search_result_page:
                       all_search_movies.extend(search_result_page)
                   else:
@@ -313,13 +224,13 @@ class MoviePosterApp(App):
     def load_initial_movies(self):
          self.clear_movie_grid()
          self.show_loading_popup()
-         Clock.schedule_once(self.load_movies_scheduled, 1)
+         Clock.schedule_once(self.load_movies, 1)
          
-    def load_movies_scheduled(self, dt):
+    def load_movies(self, dt):
         try:
             all_popular_movies = []
             for page_number in range(1, 6):
-                popular_movies_page = fetch_popular_movies(page_number)
+                popular_movies_page = fetch_movies(Movie().popular, page_number=page_number)
                 if popular_movies_page:
                     all_popular_movies.extend(popular_movies_page)
                 else:
@@ -341,36 +252,30 @@ class MoviePosterApp(App):
             if self.loading_popup:
                 self.loading_popup.dismiss()
 
-    # Function to show movie details
     def show_movie_details(self, instance):
        movie_id = getattr(instance, 'movie_id', None)
-
        if movie_id is None:
            self.show_error("Movie ID not found.")
            return
 
        movie_details = self.movie_cache.get(movie_id)
-
        if movie_details is None:
             self.show_error("Movie not in cache, could not display details.")
             return
-       
+
        self.detail_screen.clear_widgets()
        detail_layout = BoxLayout(orientation='vertical', padding=10)
-       movie_title = Label(text=movie_details.title, font_size='24sp', size_hint_y=None, height=50)
-       detail_layout.add_widget(movie_title)
+       detail_layout.add_widget(Label(text=movie_details.title, font_size='24sp', size_hint_y=None, height=50))
        movie_overview = Label(text=movie_details.overview, font_size='16sp', text_size=(Window.width - 40, None), size_hint_y=None, halign='left', valign='top')
        movie_overview.bind(texture_size=movie_overview.setter('size'))
        detail_layout.add_widget(movie_overview)
-       movie_release_date = Label(text="Release Date: " + movie_details.release_date, font_size='16sp', size_hint_y=None, height=30)
-       detail_layout.add_widget(movie_release_date)
+       detail_layout.add_widget(Label(text=f"Release Date: {movie_details.release_date}", font_size='16sp', size_hint_y=None, height=30))
        back_button = Button(text="Back", size_hint_y=None, height=50)
        back_button.bind(on_release=self.go_back)
        detail_layout.add_widget(back_button)
        self.detail_screen.add_widget(detail_layout)
        self.screen_manager.current = "Detail Screen"
 
-    # Function to go back to main screen
     def go_back(self, instance):
        self.screen_manager.current = "Main Screen"
 
