@@ -1,0 +1,5 @@
+kivy==2.1.0
+requests==2.26.0
+python-dotenv==0.19.2
+tmdbv3api==1.7.0
+Kivy-Garden==0.1.0
