@@ -2,12 +2,18 @@ import os
 import logging
 import requests
 from typing import List, Optional, Dict
+from dotenv import load_dotenv
+
+from kivy.config import Config
+Config.set('graphics', 'width', '800')
+Config.set('graphics', 'height', '600')
+Config.set('kivy', 'keyboard_mode', 'system')
 
 from kivy.app import App
 from kivy.clock import Clock, mainthread
-from kivy.config import Config
 from kivy.core.window import Window
 from kivy.graphics import Color, Rectangle
+from kivy.metrics import dp
 from kivy.properties import StringProperty, ObjectProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
@@ -18,22 +24,20 @@ from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.scrollview import ScrollView
-from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
-from dotenv import load_dotenv
 from tmdbv3api import TMDb, Movie
 from tmdbv3api.exceptions import TMDbException
 
-logging.basicConfig(
-    filename='movie_app.log',
-    level=logging.INFO,
-    format='%(asctime)s:%(levelname)s:%(message)s'
-)
 load_dotenv()
-Config.set('graphics', 'width', '800')
-Config.set('graphics', 'height', '600')
-Config.set('kivy', 'keyboard_mode', 'system')
-Config.set('graphics', 'fullscreen', 'auto')
+
+try:
+    logging.basicConfig(
+        filename='movie_app.log',
+        level=logging.INFO,
+        format='%(asctime)s:%(levelname)s:%(message)s'
+    )
+except Exception:
+    logging.basicConfig(level=logging.INFO)
 
 api_key = os.getenv('TMDB_API_KEY', '412cb4afbe96d39f9db34601104ff7e4')
 tmdb = TMDb()
@@ -90,7 +94,7 @@ class SearchBar(BoxLayout):
         super().__init__(
             orientation='horizontal',
             size_hint_y=None,
-            height=Window.height * 0.07,
+            height=dp(45),
             **kwargs
         )
         self.register_event_type('on_search')
@@ -138,21 +142,21 @@ class MoviePosterApp(App):
         self.main_screen = Screen(name="Main Screen")
         self.detail_screen = Screen(name="Detail Screen")
 
-        root_layout = BoxLayout(orientation='vertical', padding=10)
+        root_layout = BoxLayout(orientation='vertical', padding=dp(10))
 
         root_layout.add_widget(
-            Label(text="Popular Movies", font_size='24sp', size_hint_y=None, height=50)
+            Label(text="Popular Movies", font_size='24sp', size_hint_y=None, height=dp(50))
         )
 
         self.search_bar = SearchBar()
         self.search_bar.bind(on_search=self.perform_search)
         root_layout.add_widget(self.search_bar)
 
-        self.error_label = Label(text="", color=(1, 0, 0, 1), size_hint_y=None, height=30)
+        self.error_label = Label(text="", color=(1, 0, 0, 1), size_hint_y=None, height=dp(30))
         root_layout.add_widget(self.error_label)
 
         scroll_view = ScrollView(size_hint=(1, 1), do_scroll_x=False)
-        self.poster_grid_layout = GridLayout(cols=3, spacing=10, size_hint_y=None)
+        self.poster_grid_layout = GridLayout(cols=3, spacing=dp(10), size_hint_y=None)
         self.poster_grid_layout.bind(minimum_height=self.poster_grid_layout.setter('height'))
         scroll_view.add_widget(self.poster_grid_layout)
         root_layout.add_widget(scroll_view)
@@ -190,7 +194,7 @@ class MoviePosterApp(App):
             return
 
         poster_url = f"https://image.tmdb.org/t/p/w500/{movie_details.poster_path}"
-        movie_poster = ClickableImage(source=poster_url, size_hint_y=None, height=300)
+        movie_poster = ClickableImage(source=poster_url, size_hint_y=None, height=dp(300))
         movie_poster.movie_id = movie_details.id
         movie_poster.bind(on_release=self.show_movie_details)
         self.poster_grid_layout.add_widget(movie_poster)
@@ -234,9 +238,10 @@ class MoviePosterApp(App):
     def show_loading_popup(self):
         self.loading_popup = Popup(
             title='Loading',
-            content=Spinner(),
+            content=Label(text='Loading movies...'),
             size_hint=(None, None),
-            size=(200, 200)
+            size=(dp(200), dp(200)),
+            auto_dismiss=False
         )
         self.loading_popup.open()
 
@@ -284,10 +289,10 @@ class MoviePosterApp(App):
             return
 
         self.detail_screen.clear_widgets()
-        detail_layout = BoxLayout(orientation='vertical', padding=10)
+        detail_layout = BoxLayout(orientation='vertical', padding=dp(10))
 
         detail_layout.add_widget(
-            Label(text=movie.title, font_size='24sp', size_hint_y=None, height=50)
+            Label(text=movie.title, font_size='24sp', size_hint_y=None, height=dp(50))
         )
 
         if movie.poster_path:
@@ -295,14 +300,14 @@ class MoviePosterApp(App):
                 AsyncImage(
                     source=f"https://image.tmdb.org/t/p/w500/{movie.poster_path}",
                     size_hint_y=None,
-                    height=400
+                    height=dp(400)
                 )
             )
 
         overview = Label(
             text=movie.overview,
             font_size='16sp',
-            text_size=(Window.width - 40, None),
+            text_size=(Window.width - dp(40), None),
             size_hint_y=None,
             halign='left',
             valign='top'
@@ -315,11 +320,11 @@ class MoviePosterApp(App):
                 text=f"Release Date: {movie.release_date}",
                 font_size='16sp',
                 size_hint_y=None,
-                height=30
+                height=dp(30)
             )
         )
 
-        back_button = Button(text="Back", size_hint_y=None, height=50)
+        back_button = Button(text="Back", size_hint_y=None, height=dp(50))
         back_button.bind(on_release=self.go_back)
         detail_layout.add_widget(back_button)
 
