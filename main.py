@@ -1,12 +1,11 @@
 import os
+import sys
 import logging
-import requests
+import threading
 from typing import List, Optional, Dict
 from dotenv import load_dotenv
 
 from kivy.config import Config
-Config.set('graphics', 'width', '800')
-Config.set('graphics', 'height', '600')
 Config.set('kivy', 'keyboard_mode', 'system')
 
 from kivy.app import App
@@ -28,20 +27,20 @@ from kivy.uix.textinput import TextInput
 from tmdbv3api import TMDb, Movie
 from tmdbv3api.exceptions import TMDbException
 
-load_dotenv()
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_script_dir, '.env'))
 
-try:
-    logging.basicConfig(
-        filename='movie_app.log',
-        level=logging.INFO,
-        format='%(asctime)s:%(levelname)s:%(message)s'
-    )
-except Exception:
-    logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s:%(levelname)s:%(message)s'
+)
 
-api_key = os.getenv('TMDB_API_KEY', '412cb4afbe96d39f9db34601104ff7e4')
+api_key = os.getenv('TMDB_API_KEY')
+if not api_key:
+    logging.error("TMDB_API_KEY not found in .env file")
+
 tmdb = TMDb()
-tmdb.api_key = api_key
+tmdb.api_key = api_key or ''
 
 
 class MovieDetails:
@@ -165,12 +164,12 @@ class MoviePosterApp(App):
         self.screen_manager.add_widget(self.main_screen)
         self.screen_manager.add_widget(self.detail_screen)
 
-        if not tmdb.api_key:
-            self.show_error("Error: TMDB API key not found. Check your environment variables.")
+        if not api_key:
+            self.show_error("TMDB_API_KEY missing. Add it to .env in the project folder.")
             return self.screen_manager
 
         self.show_loading_popup()
-        Clock.schedule_once(self.load_movies, 1)
+        threading.Thread(target=self.load_movies, daemon=True).start()
 
         return self.screen_manager
 
@@ -209,7 +208,7 @@ class MoviePosterApp(App):
             return
 
         self.show_loading_popup()
-        Clock.schedule_once(lambda dt: self._search_movies(search_query), 0.5)
+        threading.Thread(target=self._search_movies, args=(search_query,), daemon=True).start()
 
     def _search_movies(self, query):
         try:
@@ -245,6 +244,7 @@ class MoviePosterApp(App):
         )
         self.loading_popup.open()
 
+    @mainthread
     def dismiss_loading_popup(self):
         if self.loading_popup:
             self.loading_popup.dismiss()
@@ -255,15 +255,19 @@ class MoviePosterApp(App):
 
     def load_initial_movies(self):
         self.show_loading_popup()
-        Clock.schedule_once(self.load_movies, 1)
+        threading.Thread(target=self.load_movies, daemon=True).start()
 
-    def load_movies(self, dt):
+    def load_movies(self):
         try:
             all_movies = []
             for page_number in range(1, 6):
                 page = fetch_movies(Movie().popular, page_number=page_number)
                 if page:
                     all_movies.extend(page)
+
+            if not all_movies:
+                self.show_error("Could not load movies. Check your internet connection.")
+                return
 
             for movie in all_movies:
                 self.movie_cache[movie.id] = movie
