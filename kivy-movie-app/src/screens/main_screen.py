@@ -80,4 +80,3 @@ class MainScreen(BoxLayout):
     def add_movie_poster(self, movie_details):
         poster = MoviePoster(movie_details)
         self.poster_grid.add_widget(poster)
-"""
