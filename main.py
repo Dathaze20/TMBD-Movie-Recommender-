@@ -11,9 +11,9 @@ Config.set('kivy', 'keyboard_mode', 'system')
 from kivy.app import App
 from kivy.clock import Clock, mainthread
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.metrics import dp
-from kivy.properties import StringProperty, ObjectProperty
+from kivy.properties import StringProperty, NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -21,19 +21,17 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import AsyncImage
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
-from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
 from tmdbv3api import TMDb, Movie
 from tmdbv3api.exceptions import TMDbException
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_script_dir, '.env'))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s:%(levelname)s:%(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 api_key = os.getenv('TMDB_API_KEY')
 if not api_key:
@@ -42,48 +40,138 @@ if not api_key:
 tmdb = TMDb()
 tmdb.api_key = api_key or ''
 
+BG_COLOR = (0.05, 0.05, 0.1, 1)
+CARD_COLOR = (0.12, 0.12, 0.18, 1)
+SURFACE_COLOR = (0.16, 0.16, 0.23, 1)
+ACCENT = (0.42, 0.36, 0.91, 1)
+ACCENT_GLOW = (0.55, 0.48, 1.0, 1)
+TEXT_PRIMARY = (0.95, 0.95, 0.97, 1)
+TEXT_MUTED = (0.52, 0.52, 0.62, 1)
+GOLD = (1.0, 0.84, 0.0, 1)
+SEARCH_BG = (0.1, 0.1, 0.17, 1)
+ERROR_COLOR = (0.92, 0.26, 0.21, 1)
+TAB_INACTIVE = (0.12, 0.12, 0.18, 0.7)
+
+GENRES = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
+    80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
+    14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
+    9648: "Mystery", 10749: "Romance", 878: "Sci-Fi", 10770: "TV Movie",
+    53: "Thriller", 10752: "War", 37: "Western",
+}
+
+
+def star_text(rating):
+    filled = round((rating or 0) / 2)
+    return '★' * filled + '☆' * (5 - filled)
+
 
 class MovieDetails:
-    def __init__(self, title: str, overview: str, release_date: str, poster_path: str, id: int):
+    def __init__(self, title, overview, release_date, poster_path, movie_id,
+                 vote_average=0, genre_ids=None):
         self.title = title
         self.overview = overview
         self.release_date = release_date
         self.poster_path = poster_path
-        self.id = id
+        self.id = movie_id
+        self.vote_average = vote_average or 0
+        self.genre_ids = genre_ids or []
+
+    @property
+    def year(self):
+        return self.release_date[:4] if self.release_date else ''
+
+    @property
+    def genre_text(self):
+        names = [GENRES.get(g, '') for g in self.genre_ids[:3]]
+        return ' • '.join(n for n in names if n)
 
 
-def fetch_movies(func, query=None, page_number=1) -> Optional[List[MovieDetails]]:
+def fetch_movies(func, query=None, page_number=1):
     try:
-        result_page = func(query=query, page=page_number) if query else func(page=page_number)
-        if not result_page:
+        result = func(query=query, page=page_number) if query else func(page=page_number)
+        if not result:
             return None
-        return [
-            MovieDetails(m.title, m.overview, m.release_date, m.poster_path, m.id)
-            for m in result_page
-        ]
+        out = []
+        for m in result:
+            out.append(MovieDetails(
+                title=m.title,
+                overview=getattr(m, 'overview', ''),
+                release_date=getattr(m, 'release_date', ''),
+                poster_path=getattr(m, 'poster_path', ''),
+                movie_id=m.id,
+                vote_average=getattr(m, 'vote_average', 0),
+                genre_ids=getattr(m, 'genre_ids', []),
+            ))
+        return out
     except Exception as e:
-        logging.error(f"Error fetching movies: {e}")
+        logging.error(f"Fetch error: {e}")
         return None
 
 
-class ClickableImage(ButtonBehavior, AsyncImage):
-    pass
+class MovieCard(ButtonBehavior, BoxLayout):
+    def __init__(self, movie, **kwargs):
+        super().__init__(orientation='vertical', spacing=0, padding=0, **kwargs)
+        self.movie_id = movie.id
+        self.size_hint_y = None
 
-
-class ClearButton(ButtonBehavior, Label):
-    bg_color = (0.7, 0.7, 0.7, 1)
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault('text', 'X')
-        super().__init__(**kwargs)
         with self.canvas.before:
-            Color(*self.bg_color)
-            self.rect = Rectangle(pos=self.pos, size=self.size)
-        self.bind(size=self._update_rect, pos=self._update_rect)
+            Color(*CARD_COLOR)
+            self._card_bg = RoundedRectangle(
+                pos=self.pos, size=self.size, radius=[dp(10)]
+            )
+        self.bind(
+            pos=lambda i, v: setattr(i._card_bg, 'pos', v),
+            size=lambda i, v: setattr(i._card_bg, 'size', v),
+        )
 
-    def _update_rect(self, *args):
-        self.rect.pos = self.pos
-        self.rect.size = self.size
+        poster_url = f"https://image.tmdb.org/t/p/w342/{movie.poster_path}"
+        self.poster = AsyncImage(
+            source=poster_url, size_hint=(1, None),
+            allow_stretch=True, keep_ratio=True,
+        )
+        self.add_widget(self.poster)
+
+        info = BoxLayout(
+            orientation='vertical', size_hint_y=None, height=dp(50),
+            padding=[dp(5), dp(3)],
+        )
+
+        title_lbl = Label(
+            text=movie.title, font_size='11sp', color=TEXT_PRIMARY,
+            halign='left', valign='middle',
+            shorten=True, shorten_from='right', size_hint_y=0.5,
+        )
+        title_lbl.bind(size=lambda i, s: setattr(i, 'text_size', s))
+
+        bottom_row = BoxLayout(size_hint_y=0.5)
+
+        score = f"{movie.vote_average:.1f}" if movie.vote_average else ''
+        stars_lbl = Label(
+            text=f"{star_text(movie.vote_average)} {score}",
+            font_size='9sp', color=GOLD,
+            halign='left', valign='middle', size_hint_x=0.72,
+        )
+        stars_lbl.bind(size=lambda i, s: setattr(i, 'text_size', s))
+
+        year_lbl = Label(
+            text=movie.year, font_size='9sp', color=TEXT_MUTED,
+            halign='right', valign='middle', size_hint_x=0.28,
+        )
+        year_lbl.bind(size=lambda i, s: setattr(i, 'text_size', s))
+
+        bottom_row.add_widget(stars_lbl)
+        bottom_row.add_widget(year_lbl)
+        info.add_widget(title_lbl)
+        info.add_widget(bottom_row)
+        self.add_widget(info)
+
+        self.bind(size=self._resize)
+
+    def _resize(self, *args):
+        h = self.width * 1.5
+        self.poster.height = h
+        self.height = h + dp(50)
 
 
 class SearchBar(BoxLayout):
@@ -91,39 +179,89 @@ class SearchBar(BoxLayout):
 
     def __init__(self, **kwargs):
         super().__init__(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(45),
-            **kwargs
+            orientation='horizontal', size_hint_y=None, height=dp(46),
+            spacing=dp(6), padding=[dp(4), 0], **kwargs,
         )
         self.register_event_type('on_search')
 
-        self.search_input = TextInput(
-            hint_text='Search for a movie...',
-            multiline=False,
-            size_hint_x=0.9
+        with self.canvas.before:
+            Color(*SEARCH_BG)
+            self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(14)])
+        self.bind(
+            pos=lambda i, v: setattr(i._bg, 'pos', v),
+            size=lambda i, v: setattr(i._bg, 'size', v),
         )
-        self.clear_button = ClearButton(size_hint_x=0.1)
 
-        self.add_widget(self.search_input)
-        self.add_widget(self.clear_button)
+        self.input = TextInput(
+            hint_text='Search movies...',
+            hint_text_color=(0.4, 0.4, 0.52, 1),
+            multiline=False, size_hint_x=0.82,
+            background_color=(0, 0, 0, 0),
+            foreground_color=TEXT_PRIMARY,
+            cursor_color=ACCENT_GLOW,
+            padding=[dp(14), dp(12)],
+            font_size='15sp',
+        )
+        clear = Button(
+            text='✕', size_hint_x=0.18,
+            background_normal='',
+            background_color=(*ACCENT[:3], 0.85),
+            color=TEXT_PRIMARY, font_size='18sp',
+        )
 
-        self.clear_button.bind(on_release=self._clear_text)
-        self.search_input.bind(text=self._on_text_change)
-        self.search_input.bind(on_text_validate=self._on_validate)
+        self.add_widget(self.input)
+        self.add_widget(clear)
 
-    def _on_text_change(self, instance, value):
-        self.search_text = value
+        clear.bind(on_release=self._clear)
+        self.input.bind(text=self._text_changed)
+        self.input.bind(on_text_validate=self._submit)
 
-    def _clear_text(self, instance):
-        self.search_input.text = ''
+    def _text_changed(self, inst, val):
+        self.search_text = val
+
+    def _clear(self, *a):
+        self.input.text = ''
         self.search_text = ''
         self.dispatch('on_search')
 
-    def _on_validate(self, instance):
+    def _submit(self, *a):
         self.dispatch('on_search')
 
     def on_search(self):
+        pass
+
+
+class CategoryBar(BoxLayout):
+    active = StringProperty('Popular')
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            orientation='horizontal', size_hint_y=None, height=dp(38),
+            spacing=dp(5), padding=[dp(2), dp(2)], **kwargs,
+        )
+        self.register_event_type('on_category')
+        self._btns = {}
+
+        for name in ['Popular', 'Top Rated', 'Now Playing']:
+            btn = Button(
+                text=name, background_normal='',
+                background_color=ACCENT if name == 'Popular' else TAB_INACTIVE,
+                color=TEXT_PRIMARY, font_size='13sp', bold=(name == 'Popular'),
+            )
+            btn.bind(on_release=lambda inst, n=name: self._pick(n))
+            self._btns[name] = btn
+            self.add_widget(btn)
+
+    def _pick(self, name):
+        if name == self.active:
+            return
+        self.active = name
+        for n, b in self._btns.items():
+            b.background_color = ACCENT if n == name else TAB_INACTIVE
+            b.bold = (n == name)
+        self.dispatch('on_category', name)
+
+    def on_category(self, *a):
         pass
 
 
@@ -131,212 +269,319 @@ class MoviePosterApp(App):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.movie_cache: Dict[int, MovieDetails] = {}
-        self.loading_popup: Optional[Popup] = None
-        self.error_label: Optional[Label] = None
-        self.poster_grid_layout: Optional[GridLayout] = None
-        self.search_bar: Optional[SearchBar] = None
+        self.loading_popup = None
+        self.error_label = None
+        self.grid = None
+        self.search_bar = None
+        self.title_label = None
+        self.cat_bar = None
+        self.current_cat = 'Popular'
 
     def build(self):
-        self.screen_manager = ScreenManager()
-        self.main_screen = Screen(name="Main Screen")
-        self.detail_screen = Screen(name="Detail Screen")
+        Window.clearcolor = BG_COLOR
 
-        root_layout = BoxLayout(orientation='vertical', padding=dp(10))
+        sm = ScreenManager(transition=SlideTransition())
+        self.sm = sm
+        self.main_scr = Screen(name='Main')
+        self.detail_scr = Screen(name='Detail')
 
-        root_layout.add_widget(
-            Label(text="Popular Movies", font_size='24sp', size_hint_y=None, height=dp(50))
+        root = BoxLayout(orientation='vertical', padding=dp(6), spacing=dp(5))
+
+        title_bar = BoxLayout(size_hint_y=None, height=dp(50), padding=[dp(14), 0])
+        with title_bar.canvas.before:
+            Color(*CARD_COLOR)
+            title_bar._bg = RoundedRectangle(
+                pos=title_bar.pos, size=title_bar.size, radius=[dp(14)]
+            )
+        title_bar.bind(
+            pos=lambda i, v: setattr(i._bg, 'pos', v),
+            size=lambda i, v: setattr(i._bg, 'size', v),
         )
+        self.title_label = Label(
+            text='Popular Movies', font_size='20sp', bold=True,
+            color=TEXT_PRIMARY, halign='left',
+        )
+        self.title_label.bind(size=lambda i, s: setattr(i, 'text_size', s))
+        title_bar.add_widget(self.title_label)
+        root.add_widget(title_bar)
 
         self.search_bar = SearchBar()
-        self.search_bar.bind(on_search=self.perform_search)
-        root_layout.add_widget(self.search_bar)
+        self.search_bar.bind(on_search=self._on_search)
+        root.add_widget(self.search_bar)
 
-        self.error_label = Label(text="", color=(1, 0, 0, 1), size_hint_y=None, height=dp(30))
-        root_layout.add_widget(self.error_label)
+        self.cat_bar = CategoryBar()
+        self.cat_bar.bind(on_category=self._on_category)
+        root.add_widget(self.cat_bar)
 
-        scroll_view = ScrollView(size_hint=(1, 1), do_scroll_x=False)
-        self.poster_grid_layout = GridLayout(cols=3, spacing=dp(10), size_hint_y=None)
-        self.poster_grid_layout.bind(minimum_height=self.poster_grid_layout.setter('height'))
-        scroll_view.add_widget(self.poster_grid_layout)
-        root_layout.add_widget(scroll_view)
+        self.error_label = Label(
+            text='', color=ERROR_COLOR, size_hint_y=None,
+            height=dp(0), font_size='13sp',
+        )
+        root.add_widget(self.error_label)
 
-        self.main_screen.add_widget(root_layout)
-        self.screen_manager.add_widget(self.main_screen)
-        self.screen_manager.add_widget(self.detail_screen)
+        scroll = ScrollView(
+            size_hint=(1, 1), do_scroll_x=False,
+            bar_width=dp(3), bar_color=(*ACCENT[:3], 0.4),
+        )
+        self.grid = GridLayout(
+            cols=3, spacing=dp(5), padding=dp(3), size_hint_y=None,
+        )
+        self.grid.bind(minimum_height=self.grid.setter('height'))
+        scroll.add_widget(self.grid)
+        root.add_widget(scroll)
+
+        self.main_scr.add_widget(root)
+        sm.add_widget(self.main_scr)
+        sm.add_widget(self.detail_scr)
 
         if not api_key:
-            self.show_error("TMDB_API_KEY missing. Add it to .env in the project folder.")
-            return self.screen_manager
+            self._show_error("TMDB_API_KEY missing. Add it to .env in the project folder.")
+            return sm
 
-        self.show_loading_popup()
-        threading.Thread(target=self.load_movies, daemon=True).start()
+        self._show_loading()
+        threading.Thread(target=self._load_cat, args=('Popular',), daemon=True).start()
+        return sm
 
-        return self.screen_manager
+    def _on_category(self, inst, cat):
+        self.current_cat = cat
+        self.title_label.text = f'{cat} Movies'
+        self._clear_error()
+        self._clear_grid()
+        self._show_loading()
+        threading.Thread(target=self._load_cat, args=(cat,), daemon=True).start()
 
-    @mainthread
-    def show_error(self, message: str):
-        if self.error_label:
-            self.error_label.text = message
+    def _on_search(self, *a):
+        q = self.search_bar.search_text.strip()
+        self._clear_error()
+        self._clear_grid()
 
-    @mainthread
-    def clear_error(self):
-        if self.error_label:
-            self.error_label.text = ""
-
-    @mainthread
-    def add_movie_poster(self, movie_details: MovieDetails):
-        if not self.poster_grid_layout:
+        if not q:
+            cat = self.cat_bar.active
+            self.title_label.text = f'{cat} Movies'
+            self._show_loading()
+            threading.Thread(target=self._load_cat, args=(cat,), daemon=True).start()
             return
 
-        if not movie_details.poster_path:
-            logging.warning(f"No poster available for: {movie_details.title}")
-            return
+        self.title_label.text = f'Search: {q}'
+        self._show_loading()
+        threading.Thread(target=self._do_search, args=(q,), daemon=True).start()
 
-        poster_url = f"https://image.tmdb.org/t/p/w500/{movie_details.poster_path}"
-        movie_poster = ClickableImage(source=poster_url, size_hint_y=None, height=dp(300))
-        movie_poster.movie_id = movie_details.id
-        movie_poster.bind(on_release=self.show_movie_details)
-        self.poster_grid_layout.add_widget(movie_poster)
+    def _cat_func(self, cat):
+        m = Movie()
+        if cat == 'Top Rated':
+            return m.top_rated
+        if cat == 'Now Playing':
+            return m.now_playing
+        return m.popular
 
-    def perform_search(self, *args):
-        search_query = self.search_bar.search_text.strip()
-        self.clear_error()
-        self.clear_movie_grid()
-
-        if not search_query:
-            self.load_initial_movies()
-            return
-
-        self.show_loading_popup()
-        threading.Thread(target=self._search_movies, args=(search_query,), daemon=True).start()
-
-    def _search_movies(self, query):
+    def _load_cat(self, cat):
         try:
-            all_movies = []
-            for page_number in range(1, 6):
-                page = fetch_movies(Movie().search, query, page_number)
-                if page:
-                    all_movies.extend(page)
-
-            if not all_movies:
-                self.show_error("No movies found with that name.")
+            func = self._cat_func(cat)
+            first = fetch_movies(func, page_number=1)
+            if not first:
+                self._show_error("Could not load movies. Check your connection.")
+                self._hide_loading()
                 return
+            for mv in first:
+                self.movie_cache[mv.id] = mv
+                self._add_card(mv)
+            self._hide_loading()
 
-            for movie in all_movies:
-                self.movie_cache[movie.id] = movie
-                self.add_movie_poster(movie)
-        except TMDbException as e:
-            logging.error(f"TMDb API error: {e}")
-            self.show_error(f"TMDb API error: {e}")
+            for p in range(2, 4):
+                if self.current_cat != cat:
+                    return
+                more = fetch_movies(func, page_number=p)
+                if more:
+                    for mv in more:
+                        self.movie_cache[mv.id] = mv
+                        self._add_card(mv)
+        except Exception as e:
+            logging.error(f"Load error: {e}")
+            self._show_error(str(e))
+            self._hide_loading()
+
+    def _do_search(self, query):
+        try:
+            first = fetch_movies(Movie().search, query, 1)
+            if not first:
+                self._show_error("No movies found.")
+                self._hide_loading()
+                return
+            for mv in first:
+                self.movie_cache[mv.id] = mv
+                self._add_card(mv)
+            self._hide_loading()
+
+            for p in range(2, 4):
+                more = fetch_movies(Movie().search, query, p)
+                if more:
+                    for mv in more:
+                        self.movie_cache[mv.id] = mv
+                        self._add_card(mv)
         except Exception as e:
             logging.error(f"Search error: {e}")
-            self.show_error(f"Error searching movies: {e}")
-        finally:
-            self.dismiss_loading_popup()
+            self._show_error(str(e))
+            self._hide_loading()
 
-    def show_loading_popup(self):
+    @mainthread
+    def _add_card(self, movie):
+        if not self.grid or not movie.poster_path:
+            return
+        card = MovieCard(movie)
+        card.bind(on_release=self._open_detail)
+        self.grid.add_widget(card)
+
+    @mainthread
+    def _show_error(self, msg):
+        if self.error_label:
+            self.error_label.text = msg
+            self.error_label.height = dp(26)
+
+    @mainthread
+    def _clear_error(self):
+        if self.error_label:
+            self.error_label.text = ''
+            self.error_label.height = dp(0)
+
+    @mainthread
+    def _clear_grid(self):
+        if self.grid:
+            self.grid.clear_widgets()
+
+    @mainthread
+    def _show_loading(self):
         self.loading_popup = Popup(
-            title='Loading',
-            content=Label(text='Loading movies...'),
-            size_hint=(None, None),
-            size=(dp(200), dp(200)),
-            auto_dismiss=False
+            title='', separator_height=0,
+            content=Label(text='Loading...', color=TEXT_PRIMARY, font_size='15sp'),
+            size_hint=(None, None), size=(dp(150), dp(90)),
+            auto_dismiss=False,
+            background_color=(*CARD_COLOR[:3], 0.95),
         )
         self.loading_popup.open()
 
     @mainthread
-    def dismiss_loading_popup(self):
+    def _hide_loading(self):
         if self.loading_popup:
             self.loading_popup.dismiss()
 
-    def clear_movie_grid(self):
-        if self.poster_grid_layout:
-            self.poster_grid_layout.clear_widgets()
-
-    def load_initial_movies(self):
-        self.show_loading_popup()
-        threading.Thread(target=self.load_movies, daemon=True).start()
-
-    def load_movies(self):
-        try:
-            all_movies = []
-            for page_number in range(1, 6):
-                page = fetch_movies(Movie().popular, page_number=page_number)
-                if page:
-                    all_movies.extend(page)
-
-            if not all_movies:
-                self.show_error("Could not load movies. Check your internet connection.")
-                return
-
-            for movie in all_movies:
-                self.movie_cache[movie.id] = movie
-                self.add_movie_poster(movie)
-        except TMDbException as e:
-            logging.error(f"TMDb API error: {e}")
-            self.show_error(f"TMDb API error: {e}")
-        except Exception as e:
-            logging.error(f"Load error: {e}")
-            self.show_error(f"Error loading movies: {e}")
-        finally:
-            self.dismiss_loading_popup()
-
-    def show_movie_details(self, instance):
-        movie_id = getattr(instance, 'movie_id', None)
-        if movie_id is None:
-            self.show_error("Movie ID not found.")
+    def _open_detail(self, inst):
+        mid = getattr(inst, 'movie_id', None)
+        if mid is None:
+            return
+        movie = self.movie_cache.get(mid)
+        if not movie:
             return
 
-        movie = self.movie_cache.get(movie_id)
-        if movie is None:
-            self.show_error("Movie not in cache.")
-            return
+        self.detail_scr.clear_widgets()
 
-        self.detail_screen.clear_widgets()
-        detail_layout = BoxLayout(orientation='vertical', padding=dp(10))
-
-        detail_layout.add_widget(
-            Label(text=movie.title, font_size='24sp', size_hint_y=None, height=dp(50))
+        page = BoxLayout(orientation='vertical')
+        with page.canvas.before:
+            Color(*BG_COLOR)
+            page._bg = Rectangle(pos=page.pos, size=page.size)
+        page.bind(
+            pos=lambda i, v: setattr(i._bg, 'pos', v),
+            size=lambda i, v: setattr(i._bg, 'size', v),
         )
+
+        top = BoxLayout(size_hint_y=None, height=dp(48), padding=[dp(6), dp(4)], spacing=dp(6))
+        with top.canvas.before:
+            Color(*CARD_COLOR)
+            top._bg = Rectangle(pos=top.pos, size=top.size)
+        top.bind(
+            pos=lambda i, v: setattr(i._bg, 'pos', v),
+            size=lambda i, v: setattr(i._bg, 'size', v),
+        )
+
+        back = Button(
+            text='← Back', size_hint_x=0.22,
+            background_normal='', background_color=ACCENT,
+            color=TEXT_PRIMARY, font_size='13sp', bold=True,
+        )
+        back.bind(on_release=self._go_back)
+
+        ttl = Label(
+            text=movie.title, font_size='15sp', bold=True,
+            color=TEXT_PRIMARY, shorten=True, shorten_from='right',
+            halign='center', size_hint_x=0.78,
+        )
+        ttl.bind(size=lambda i, s: setattr(i, 'text_size', s))
+
+        top.add_widget(back)
+        top.add_widget(ttl)
+        page.add_widget(top)
+
+        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        body = BoxLayout(
+            orientation='vertical', size_hint_y=None,
+            padding=dp(14), spacing=dp(10),
+        )
+        body.bind(minimum_height=body.setter('height'))
 
         if movie.poster_path:
-            detail_layout.add_widget(
-                AsyncImage(
-                    source=f"https://image.tmdb.org/t/p/w500/{movie.poster_path}",
-                    size_hint_y=None,
-                    height=dp(400)
-                )
-            )
+            body.add_widget(AsyncImage(
+                source=f"https://image.tmdb.org/t/p/w500/{movie.poster_path}",
+                size_hint=(1, None), height=dp(380),
+                allow_stretch=True, keep_ratio=True,
+            ))
 
-        overview = Label(
-            text=movie.overview,
-            font_size='16sp',
-            text_size=(Window.width - dp(40), None),
-            size_hint_y=None,
-            halign='left',
-            valign='top'
+        body.add_widget(self._label(
+            movie.title, '22sp', TEXT_PRIMARY, bold=True, height=dp(36),
+        ))
+
+        stars = star_text(movie.vote_average)
+        score = f"{movie.vote_average:.1f}/10" if movie.vote_average else 'N/A'
+        body.add_widget(self._label(f"{stars}  {score}", '16sp', GOLD, height=dp(28)))
+
+        meta = []
+        if movie.year:
+            meta.append(movie.year)
+        if movie.genre_text:
+            meta.append(movie.genre_text)
+        if meta:
+            body.add_widget(self._label(' | '.join(meta), '13sp', TEXT_MUTED, height=dp(22)))
+
+        sep = Widget(size_hint_y=None, height=dp(1))
+        with sep.canvas:
+            Color(*SURFACE_COLOR)
+            sep._r = Rectangle(pos=sep.pos, size=sep.size)
+        sep.bind(
+            pos=lambda i, v: setattr(i._r, 'pos', v),
+            size=lambda i, v: setattr(i._r, 'size', v),
         )
-        overview.bind(texture_size=overview.setter('size'))
-        detail_layout.add_widget(overview)
+        body.add_widget(sep)
 
-        detail_layout.add_widget(
-            Label(
-                text=f"Release Date: {movie.release_date}",
-                font_size='16sp',
-                size_hint_y=None,
-                height=dp(30)
+        body.add_widget(self._label('Overview', '16sp', TEXT_PRIMARY, bold=True, height=dp(28)))
+
+        if movie.overview:
+            ov = Label(
+                text=movie.overview, font_size='14sp',
+                color=(0.78, 0.78, 0.84, 1), size_hint_y=None,
+                halign='left', valign='top',
+                text_size=(Window.width - dp(34), None),
             )
+            ov.bind(texture_size=ov.setter('size'))
+            body.add_widget(ov)
+
+        body.add_widget(Widget(size_hint_y=None, height=dp(30)))
+
+        scroll.add_widget(body)
+        page.add_widget(scroll)
+
+        self.detail_scr.add_widget(page)
+        self.sm.transition.direction = 'left'
+        self.sm.current = 'Detail'
+
+    def _label(self, text, size, color, bold=False, height=dp(30)):
+        lbl = Label(
+            text=text, font_size=size, color=color, bold=bold,
+            size_hint_y=None, height=height,
+            halign='left', text_size=(Window.width - dp(34), None),
         )
+        return lbl
 
-        back_button = Button(text="Back", size_hint_y=None, height=dp(50))
-        back_button.bind(on_release=self.go_back)
-        detail_layout.add_widget(back_button)
-
-        self.detail_screen.add_widget(detail_layout)
-        self.screen_manager.current = "Detail Screen"
-
-    def go_back(self, instance):
-        self.screen_manager.current = "Main Screen"
+    def _go_back(self, *a):
+        self.sm.transition.direction = 'right'
+        self.sm.current = 'Main'
 
 
 if __name__ == '__main__':
