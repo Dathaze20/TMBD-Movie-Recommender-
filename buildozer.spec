@@ -27,7 +27,13 @@ version = 1.0.0
 #    package is unlisted and appends the resolved wheel URL *alongside* the
 #    pin - pip then sees both "python-dotenv==1.2.2" and "python-dotenv 1.2.3
 #    from <url>" and fails with ResolutionImpossible.
-requirements = python3,kivy==2.3.1,requests,tmdbv3api==1.9.0,python_dotenv==1.2.2,certifi
+#  - charset_normalizer is capped below 3.5 and listed explicitly even though
+#    requests pulls it in anyway. From 3.5.0 it publishes Android wheels
+#    (e.g. cp314-cp314-android_24_arm64_v8a). p4a resolves those happily,
+#    then installs the requirements with a plain host pip that has no
+#    --platform flag, which rejects them: "not a supported wheel on this
+#    platform". 3.4.x ships only py3-none-any, which installs fine.
+requirements = python3,kivy==2.3.1,requests,tmdbv3api==1.9.0,python_dotenv==1.2.2,certifi,charset_normalizer<3.5
 
 # App needs network access to reach the TMDB API and poster CDN.
 android.permissions = INTERNET

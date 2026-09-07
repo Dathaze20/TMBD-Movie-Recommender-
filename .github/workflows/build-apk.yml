@@ -72,6 +72,48 @@ jobs:
           print("requirements OK:", reqs)
           PY
 
+      # p4a happily resolves an Android wheel, then installs the requirements
+      # with a plain host pip that has no --platform flag and rejects it
+      # ("not a supported wheel on this platform"). Only py3-none-any wheels
+      # survive that round trip, so refuse anything publishing Android wheels.
+      - name: Check pip requirements ship pure-Python wheels
+        run: |
+          python3 - <<'PY'
+          import configparser, json, re, sys, urllib.request
+          cfg = configparser.ConfigParser()
+          cfg.read('buildozer.spec')
+          reqs = [r.strip() for r in cfg['app']['requirements'].split(',') if r.strip()]
+          recipes = {'python3', 'kivy', 'openssl', 'sdl2', 'sdl3', 'pyjnius',
+                     'android', 'sqlite3', 'png', 'freetype', 'libffi'}
+          bad = []
+          for spec in reqs:
+              name = re.split(r'[=<>!~]', spec, 1)[0].strip()
+              if name.lower() in recipes:
+                  continue
+              try:
+                  url = f"https://pypi.org/pypi/{name.replace('_', '-')}/json"
+                  data = json.load(urllib.request.urlopen(url, timeout=30))
+              except Exception as e:
+                  print(f"  {name}: could not check ({e}) - skipping")
+                  continue
+              ver = data['info']['version']
+              whls = [f['filename'] for f in data['releases'].get(ver, [])
+                      if f['filename'].endswith('.whl')]
+              android = [w for w in whls if 'android' in w]
+              pinned = any(c in spec for c in '=<>!~')
+              print(f"  {name}: latest {ver}, android wheels: {len(android)}"
+                    f"{' (pinned)' if pinned else ''}")
+              # Only a problem when we are NOT pinning away from it.
+              if android and not pinned:
+                  bad.append(f"{name} (latest {ver})")
+          if bad:
+              print(f"::error::These requirements publish Android wheels: {bad}. "
+                    "p4a resolves them but its install step uses a host pip with no "
+                    "--platform flag and rejects them. Pin to a version that ships "
+                    "only py3-none-any wheels.")
+              sys.exit(1)
+          PY
+
       # cython<3.2 is the ceiling python-for-android's pyjnius recipe
       # declares; its kivy and android recipes only require >=0.29.1.
       - name: Install buildozer
@@ -84,15 +126,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-global-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: buildozer-global-v3-${{ runner.os }}-
+          key: buildozer-global-v4-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: buildozer-global-v4-${{ runner.os }}-
 
       - name: Cache compiled recipes
         uses: actions/cache@v4
         with:
           path: .buildozer
-          key: buildozer-local-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: buildozer-local-v3-${{ runner.os }}-
+          key: buildozer-local-v4-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: buildozer-local-v4-${{ runner.os }}-
 
       # buildozer.spec bundles .env via source.include_patterns, so setting a
       # TMDB_API_KEY repository secret overrides the key built into main.py.
