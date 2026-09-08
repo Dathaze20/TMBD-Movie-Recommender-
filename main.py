@@ -3,6 +3,7 @@ import json
 import time
 import socket
 import hashlib
+import traceback
 import logging
 import threading
 import urllib.request
@@ -41,7 +42,21 @@ from movie_utils import star_text, MovieDetails
 # Kivy's default font (Roboto) has no glyphs for ★ ☆ ✕ ← ▶, so those render
 # as blank boxes - DejaVuSans (also bundled with Kivy, on every platform
 # including Android) does have them.
-SYMBOL_FONT = os.path.join(kivy_data_dir, 'fonts', 'DejaVuSans.ttf')
+#
+# font_name pointing at a file that is not there does not fail here; it fails
+# later, when Kivy first renders a label using it. On Android that surfaces as
+# the app closing the instant it opens, with nothing on screen to explain it.
+# So check once, and fall back to the always-registered default rather than
+# taking the whole app down over some missing glyphs.
+_DEJAVU = os.path.join(kivy_data_dir, 'fonts', 'DejaVuSans.ttf')
+if os.path.exists(_DEJAVU):
+    SYMBOL_FONT = _DEJAVU
+else:
+    SYMBOL_FONT = 'Roboto'
+    logging.warning(
+        "DejaVuSans.ttf not found at %s - falling back to Roboto. "
+        "Symbol glyphs (star, back arrow) may render as boxes.", _DEJAVU
+    )
 
 # Prevent a flaky/hung mobile connection from blocking a background thread
 # (and the loading popup) forever.
@@ -92,14 +107,24 @@ if not os.getenv('TMDB_API_KEY'):
     _checked = ', '.join(_env_candidates)
     logging.warning(f"TMDB_API_KEY not found (checked for .env at: {_checked}); using built-in default key.")
 
-tmdb = TMDb()
-tmdb.api_key = api_key or ''
-tmdb.wait_on_rate_limit = True
-# tmdbv3api caches identical GET requests indefinitely (unbounded lru_cache)
-# on its own, independent of our _category_cache TTL/refresh logic below -
-# disable it so our cache is the single source of truth and the refresh
-# button actually reaches TMDB's servers instead of replaying old data.
-tmdb.cache = False
+# Module-level failures happen before build() runs, so the crash screen
+# cannot catch them - the app would just close. Record the traceback instead
+# and let build() display it.
+STARTUP_ERROR = None
+try:
+    tmdb = TMDb()
+    tmdb.api_key = api_key or ''
+    tmdb.wait_on_rate_limit = True
+    # tmdbv3api caches identical GET requests indefinitely (unbounded
+    # lru_cache) on its own, independent of our _category_cache TTL/refresh
+    # logic below - disable it so our cache is the single source of truth and
+    # the refresh button actually reaches TMDB's servers instead of replaying
+    # old data.
+    tmdb.cache = False
+except Exception:
+    STARTUP_ERROR = traceback.format_exc()
+    logging.error("TMDB client setup failed:\n%s", STARTUP_ERROR)
+    tmdb = None
 
 TMDB_ATTRIBUTION = "This product uses the TMDB API but is not endorsed or certified by TMDB."
 
@@ -507,6 +532,59 @@ class MoviePosterApp(App):
         self._detail_body = None
 
     def build(self):
+        """Build the UI, but never die silently.
+
+        An exception here kills the app before anything is drawn. On desktop
+        you get a traceback in the terminal; on Android the app just closes
+        the instant you open it, with no way to see why short of a USB cable
+        and adb. So catch it and put the traceback on screen instead.
+        """
+        try:
+            if STARTUP_ERROR:
+                raise RuntimeError(
+                    "Failed during module import:\n" + STARTUP_ERROR
+                )
+            return self._build_ui()
+        except Exception:
+            report = traceback.format_exc()
+            logging.error("Startup failed:\n%s", report)
+            try:
+                path = os.path.join(self.user_data_dir, 'crash.txt')
+                with open(path, 'w') as fh:
+                    fh.write(report)
+            except Exception:
+                path = '(could not be written)'
+            return self._crash_screen(report, path)
+
+    def _crash_screen(self, report, path):
+        root = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
+        with root.canvas.before:
+            Color(*BG_COLOR)
+            root._bg = Rectangle(pos=root.pos, size=root.size)
+        root.bind(
+            pos=lambda i, v: setattr(i._bg, 'pos', v),
+            size=lambda i, v: setattr(i._bg, 'size', v),
+        )
+        head = Label(
+            text='Startup failed', font_size='20sp', bold=True,
+            color=ERROR_COLOR, size_hint_y=None, height=dp(34),
+        )
+        sub = Label(
+            text=f'Saved to {path}', font_size='11sp', color=TEXT_MUTED,
+            size_hint_y=None, height=dp(20),
+        )
+        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=True)
+        body = Label(
+            text=report, font_size='11sp', color=TEXT_PRIMARY,
+            size_hint=(None, None), halign='left', valign='top',
+        )
+        body.bind(texture_size=body.setter('size'))
+        scroll.add_widget(body)
+        for w in (head, sub, scroll):
+            root.add_widget(w)
+        return root
+
+    def _build_ui(self):
         Window.clearcolor = BG_COLOR
         Window.bind(on_keyboard=self._on_key)
         # Without this the Android soft keyboard covers the search field
